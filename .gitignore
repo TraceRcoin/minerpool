@@ -1,4 +1,39 @@
+# Tracercoin minerpool — secrets & artifacts NEVER committed.
+# Enforce BEFORE the incoming pool code lands (D14 / feedback-github-sync-all-systems).
+
+# --- existing (kept) ---
 .secrets/
 credentials.json
 secrets.local.json
 .env
+
+# --- pool config carries the daemon rpcpassword: commit pool_config.example.json instead ---
+pool_config.json
+*.conf
+*.env
+
+# --- secrets / tokens / keys ---
+*secret*
+*token*
+*.pem
+id_*
+*.key
+
+# --- wallets, chain data, PII/state DBs ---
+wallet.dat
+*.dat
+*.sqlite
+*.db
+dump.rdb
+redis*.rdb
+
+# --- runtime / build artifacts ---
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db
