@@ -1,0 +1,55 @@
+{
+  "coin": {
+    "name": "tracercoin",
+    "symbol": "TFX-test",
+    "algorithm": "scrypt",
+    "peerMagic": "544658f1",
+    "reward": "POW",
+    "txMessages": false
+  },
+  "address": "REPLACE_WITH_POOL_PAYOUT_ADDRESS",
+  "rewardRecipients": {
+    "REPLACE_WITH_DEVFEE_ADDRESS": 2
+  },
+  "blockRefreshInterval": 1000,
+  "jobRebroadcastTimeout": 55,
+  "connectionTimeout": 600,
+  "emitInvalidBlockHashes": false,
+  "tcpProxyProtocol": false,
+  "banning": {
+    "enabled": false
+  },
+  "ports": {
+    "3032": {
+      "diff": 0.1,
+      "varDiff": {
+        "minDiff": 0.05,
+        "maxDiff": 16,
+        "targetTime": 15,
+        "retargetTime": 60,
+        "variancePercent": 30
+      }
+    },
+    "3333": {
+      "diff": 8,
+      "varDiff": {
+        "minDiff": 1,
+        "maxDiff": 8192,
+        "targetTime": 15,
+        "retargetTime": 90,
+        "variancePercent": 30
+      }
+    }
+  },
+  "daemons": [
+    {
+      "host": "127.0.0.1",
+      "port": 19556,
+      "user": "REPLACE_WITH_RPC_USER",
+      "password": "REPLACE_WITH_RPC_PASSWORD"
+    }
+  ],
+  "p2p": {
+    "enabled": false
+  }
+}

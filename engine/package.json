@@ -1,0 +1,7 @@
+{
+  "name": "stratum-pool",
+  "version": "0.1.9-tfx",
+  "main": "lib/index.js",
+  "dependencies": { "async": "*", "scryptsy": "2.1.0" },
+  "engines": { "node": ">=8" }
+}
