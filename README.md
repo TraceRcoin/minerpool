@@ -48,4 +48,4 @@ Use your own `tfx1…` payout address as the username. Rewards are paid in mined
 
 ## License
 
-Released under the terms of the MIT license.
+Released under the terms of the TFX Token license.
