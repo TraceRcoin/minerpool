@@ -1,0 +1,21 @@
+[Unit]
+# Tracercoin stratum pool (init.js -> engine + portal-authed auth + spool writer).
+# The ingest flusher (ingest_client.js) runs inside this process and syncs the
+# local spool DB to the portal's /api/portal/ingest/*.
+Description=Tracercoin mining pool (stratum + spool writer + ingest flusher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tfxpool
+# Secrets (PORTAL_BASE_URL, POOL_INTERNAL_TOKEN, POOL_INGEST_TOKEN, SPOOL_DB, ...).
+EnvironmentFile=/opt/tfxpool/pool.env
+ExecStart=/usr/bin/node /opt/tfxpool/init.js
+Restart=on-failure
+RestartSec=3
+# Spool DB lives here; make sure it's writable.
+ReadWritePaths=/var/lib/tfxpool
+
+[Install]
+WantedBy=multi-user.target

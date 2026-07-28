@@ -64,10 +64,13 @@ on-chain testnet payouts).
 |---|---|
 | `engine/` | node-stratum-pool engine (NOMP-style; `lib/*.js` is the stratum/daemon core) |
 | `init.js` | Pool entrypoint — wires the engine to portal-integrated auth + the stats writer |
-| `portal_bridge.js` | Authorizes each rig against the miner portal's `/api/portal/worker-auth`; writes `pool_worker_stats` / `pool_blocks` / `pool_payouts` / `pool_round` into the co-located portal SQLite |
-| `payout_monitor.py` | Maturity + payout loop — confirms mature blocks, sends credited amounts on-chain, records txids, flips payouts to `paid` |
+| `portal_bridge.js` | Authorizes each rig against the miner portal's `/api/portal/worker-auth` (over HTTPS); records `shares` / `blocks` / `payouts` into the LOCAL spool DB |
+| `ingest_client.js` | Owns the local spool DB (`SPOOL_DB`, WAL) and the flusher loop — every ~10s it POSTs an absolute stats snapshot, then unsynced blocks + payouts, to the production portal's `/api/portal/ingest/*` (idempotent, retained-until-acked; mining never blocks on the portal) |
+| `payout_monitor.py` | Maturity + payout loop — confirms mature blocks, sends credited amounts on-chain, records txids, flips payouts to `paid` — writing ONLY the spool DB (`synced=0`); the flusher syncs them up |
 | `gen-config.js` | Generates `pool_config.json` by injecting the daemon `rpcpassword` read from `tracercoin.conf` (never prints it) |
 | `pool_config.example.json` | Redacted config template — copy to `pool_config.json` and fill in real address / rpc creds (the real file is git-ignored) |
+| `pool.env.example` | Template for `/opt/tfxpool/pool.env` (systemd `EnvironmentFile`, 600, git-ignored): `PORTAL_BASE_URL`, `POOL_INTERNAL_TOKEN`, `POOL_INGEST_TOKEN`, `SPOOL_DB`, mainnet `TFX_CLI` |
+| `deploy/*.service` | Example systemd units (`tfxpool.service`, `tfx-payout-monitor.service`) wiring `EnvironmentFile=/opt/tfxpool/pool.env` |
 | `run_testminers.sh` | Staging helper — launches cpuminer rigs authed via the portal (passwords read from a creds file, never hardcoded) |
 | `package.json` / `package-lock.json` | Pool deps (`better-sqlite3`); run `npm ci` on the box |
 
@@ -83,17 +86,26 @@ python3 payout_monitor.py    # start the maturity/payout loop (add --once for a 
 `pool_config.json` is **never committed** — it carries the live daemon `rpcpassword`.
 Start from `pool_config.example.json`.
 
-### Staging → production cutover diff
+### Portal sync (cross-box ingest, production-cutover.md §1)
 
-The committed source is the **staging** build. Nothing hardcodes a secret; the cutover
-is entirely config/environment:
+The pool box (`pool-1`) and the portal backend (`empire-web-1`) are separate machines
+with separate SQLite files, so the pool never writes the portal DB directly. Instead:
 
-- **`portal_bridge.js`** — set env `PORTAL_HOST` / `PORTAL_PORT` to the production portal,
-  `STAGING_DB` to the production portal DB path, and supply the prod `POOL_INTERNAL_TOKEN`
-  via the environment (never in the file).
-- **`payout_monitor.py`** — point `STAGING_DB` at the prod portal DB; switch `TFX_CLI` from
-  the `-testnet` invocation to mainnet (drop `-testnet`, point `-datadir` at the mainnet
-  wallet); set `COINBASE_MATURITY` / `MINIMUM_PAYOUT` as desired.
+1. `portal_bridge.js` + `payout_monitor.py` write the pool's own **spool DB** (`SPOOL_DB`).
+2. `ingest_client.js`'s flusher POSTs **absolute snapshots** (`X-Pool-Token: POOL_INGEST_TOKEN`)
+   to the backend's `/api/portal/ingest/{stats,blocks,payouts}`, which is the single writer
+   of `waitlist.db`. The portal then renders live per-worker hashrate/shares/blocks/payouts.
+
+All config is env-driven (nothing hardcoded). Copy `pool.env.example` to
+`/opt/tfxpool/pool.env` (600, git-ignored) and fill it:
+
+- **`PORTAL_BASE_URL`** — `https://tracercoin.org` (worker-auth + ingest share it).
+- **`POOL_INTERNAL_TOKEN`** — the prod worker-auth secret (copied from the backend's env).
+- **`POOL_INGEST_TOKEN`** — the ingest secret (the SAME value set in the backend's env;
+  separate from the worker-auth token).
+- **`SPOOL_DB`** — the local spool path (default `/var/lib/tfxpool/spool.db`).
+- **`payout_monitor.py`** — `TFX_CLI` switches to mainnet (drop `-testnet`,
+  `-rpcwallet=poolwallet`); set `COINBASE_MATURITY` / `MINIMUM_PAYOUT` as desired.
 - **`pool_config.json`** — real pool payout `address`, dev-fee `rewardRecipients`, and the
   mainnet daemon RPC port/creds (generated via `gen-config.js`).
 
