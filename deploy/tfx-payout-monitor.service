@@ -1,0 +1,19 @@
+[Unit]
+# Maturity + on-chain payout loop. Writes ONLY the local spool DB (confirmed / paid /
+# txid, synced=0); the ingest flusher in the pool process syncs those up to the portal.
+Description=Tracercoin pool payout monitor (maturity + on-chain payouts -> spool)
+After=network-online.target tfxpool.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tfxpool
+# SPOOL_DB, TFX_CLI (mainnet, -rpcwallet=poolwallet), COINBASE_MATURITY, MINIMUM_PAYOUT.
+EnvironmentFile=/opt/tfxpool/pool.env
+ExecStart=/usr/bin/python3 /opt/tfxpool/payout_monitor.py
+Restart=on-failure
+RestartSec=10
+ReadWritePaths=/var/lib/tfxpool
+
+[Install]
+WantedBy=multi-user.target
