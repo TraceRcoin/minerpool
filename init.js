@@ -30,7 +30,14 @@ var authorizeFn = function(ip, port, workerName, password, cb){
 var pool = Stratum.createPool(cfg, authorizeFn);
 pool.on('share', function(isValidShare, isValidBlock, data){
   if (isValidBlock){
-    log('*** BLOCK FOUND *** height='+data.height+' blockHash='+data.blockHash+' worker='+data.worker+' rewardSat='+data.blockReward);
+    // "Candidate", not "found": the engine flags isValidBlock the moment a share meets
+    // network difficulty, before the daemon has decided which sibling wins the active
+    // chain. During a stale/orphan race (see the height-17 double-report) two candidates
+    // can be logged at the same height with different hashes — normal, not a divergence.
+    // payout_monitor.py confirms the winner against the active chain before any payout,
+    // and portal_bridge.recordBlock is orphan-safe/idempotent, so a losing candidate is
+    // recorded at most once and never paid.
+    log('*** BLOCK CANDIDATE *** (pending chain confirmation) height='+data.height+' blockHash='+data.blockHash+' worker='+data.worker+' rewardSat='+data.blockReward);
     redis('rpush','tfxpool:blocks', JSON.stringify({t:ts(),height:data.height,hash:data.blockHash,worker:data.worker}));
     try { bridge.recordShare(data.worker, data.shareDiff); } catch(e){ log('bridge.recordShare(block) err '+e.message); }
     try { bridge.recordBlock(data.height, data.blockHash, data.worker, data.blockReward); }

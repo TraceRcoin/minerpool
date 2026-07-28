@@ -53,28 +53,70 @@ def conn():
 
 def cycle():
     c = conn()
-    # 1. confirm mature blocks
+    # 1. confirm mature blocks.
+    #
+    # A block only confirms once the daemon reports the STORED hash on its active chain
+    # with >= COINBASE_MATURITY confirmations. getblock reports confirmations = -1 for a
+    # block that exists but is off the active chain (an orphan), which never satisfies the
+    # gate, so an orphaned sibling never confirms and never funds a payout.
+    #
+    # Self-heal for the "keep first block" rule (portal_bridge recordBlock keeps the FIRST
+    # row seen at a height): if that first-seen hash turns out to be the orphan, the real
+    # winner at this height would otherwise never confirm. When the stored hash is off-chain
+    # (confs < 0), reconcile to the active-chain hash reported by getblockhash(height) before
+    # re-checking maturity, so a legit block is still paid exactly once.
     for b in c.execute("SELECT height, hash, status FROM pool_blocks WHERE status='pending'").fetchall():
+        block_hash = b["hash"]
         try:
-            confs = json.loads(cli("getblock", b["hash"], "1")).get("confirmations", 0)
+            confs = json.loads(cli("getblock", block_hash, "1")).get("confirmations", 0)
         except Exception as e:
             print(f"[monitor] getblock {b['height']} err: {e}", flush=True)
             continue
+        if confs is not None and confs < 0:
+            # Stored hash is off the active chain — try to adopt the active-chain hash at
+            # this height (if one exists yet) so the winner can mature and pay.
+            try:
+                active_hash = cli("getblockhash", str(b["height"]))
+            except Exception:
+                active_hash = None
+            if active_hash and active_hash != block_hash:
+                try:
+                    confs = json.loads(cli("getblock", active_hash, "1")).get("confirmations", 0)
+                except Exception as e:
+                    print(f"[monitor] getblock(active) {b['height']} err: {e}", flush=True)
+                    continue
+                c.execute(
+                    "UPDATE pool_blocks SET hash=? WHERE height=?", (active_hash, b["height"])
+                )
+                c.commit()
+                block_hash = active_hash
+                print(
+                    f"[monitor] block {b['height']} stored hash was orphaned; "
+                    f"adopted active-chain hash {active_hash}", flush=True
+                )
         if confs >= COINBASE_MATURITY:
             c.execute("UPDATE pool_blocks SET status='confirmed' WHERE height=?", (b["height"],))
             c.commit()
             print(f"[monitor] block {b['height']} matured ({confs} confs) -> confirmed", flush=True)
 
-    # 2. pay out pending payouts whose block is confirmed (coinbase spendable)
+    # 2. pay out pending payouts whose funding block is CONFIRMED (coinbase spendable).
+    #
+    # Money-safety gate (fork17): only pay a credit whose block_height reached
+    # status='confirmed' in step 1 — i.e. the block that funds it is on the daemon's
+    # active chain with >= COINBASE_MATURITY confirmations. A pending/orphaned block
+    # never funds a send, so a stale height-N sibling can no longer trigger a real
+    # sendtoaddress. Relying on "sendtoaddress throws Insufficient funds" alone was
+    # unsafe: with a warm hot-wallet float (or an unrelated matured coinbase), an
+    # orphan-funded payout row would have spent real coins. The JOIN on pool_blocks
+    # with status='confirmed' makes the funding block a hard precondition.
     rows = c.execute(
         """SELECT p.id, p.account_id, p.amount_tfx, p.block_height, a.payout_address
              FROM pool_payouts p
              JOIN portal_accounts a ON a.id = p.account_id
-            WHERE p.status='pending'"""
+             JOIN pool_blocks b     ON b.height = p.block_height
+            WHERE p.status='pending'
+              AND b.status='confirmed'"""
     ).fetchall()
-    # sendtoaddress self-gates on spendable (matured) coinbase — an immature wallet
-    # simply throws "Insufficient funds" and the row stays pending until a coinbase
-    # matures. So we attempt every pending payout each cycle; no separate confirmed gate.
     for p in rows:
         if not p["payout_address"]:
             print(f"[monitor] payout {p['id']} has no payout_address; skipping", flush=True)

@@ -25,6 +25,24 @@ db.pragma('busy_timeout = 5000');
 const authCache = {};
 const lastShareTs = {};
 
+// Orphan-safe / idempotent ledger guards (mirrors production-cutover.md §1.2 & §1.4).
+// The pool writes to a co-located SQLite whose schema is owned by the portal copy;
+// these guards are additive and safe to run on every boot (IF NOT EXISTS / column probe):
+//   - pool_payouts gets a deterministic `pool_ref` (`height:account_id:worker`) with a
+//     UNIQUE index so a stale/orphan sibling at the same height cannot create a second
+//     credit for the same worker (ON CONFLICT(pool_ref) DO NOTHING in recordBlock).
+//   - pool_blocks keeps its height PK; recordBlock switches from INSERT OR REPLACE to
+//     ON CONFLICT(height) DO NOTHING so an orphan can never overwrite the first winner.
+function ensureLedgerGuards() {
+  const cols = db.prepare('PRAGMA table_info(pool_payouts)').all();
+  const hasRef = cols.some(c => c.name === 'pool_ref');
+  if (!hasRef) {
+    db.exec('ALTER TABLE pool_payouts ADD COLUMN pool_ref TEXT');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_payouts_ref ON pool_payouts(pool_ref)');
+}
+ensureLedgerGuards();
+
 function ensureRound() {
   const r = db.prepare('SELECT id FROM pool_round WHERE id=1').get();
   if (!r) {
@@ -109,14 +127,27 @@ function recordStale(login) {
 // Block found -> record block, reset round, credit miner (98%) as a pending payout.
 // The 2% dev-fee is enforced in the coinbase by rewardRecipients; here it is the
 // reward_tfx (total) minus the credited amount.
+// Deterministic idempotency key for a block credit: `height:account_id:worker`.
+// A stale/orphan sibling found for the same height by the same account+worker maps to
+// the same ref, so ON CONFLICT(pool_ref) DO NOTHING keeps exactly one credit.
+function payoutRef(height, account_id, worker) {
+  return height + ':' + account_id + ':' + (worker || '');
+}
+
 function recordBlock(height, hash, login, blockRewardSat) {
   const key = (login || '').toLowerCase();
   const info = authCache[key] || {};
   const total = (parseInt(blockRewardSat, 10) || 0) / 1e8;
   const iso = new Date().toISOString();
+  // Keep the FIRST block recorded at this height. An orphaned sibling that arrives
+  // second must never overwrite the winner, so DO NOTHING on the height conflict
+  // (replaces the old INSERT OR REPLACE, which let the loser clobber the winner's
+  // hash/finder/reward). Whether this height ultimately confirms is decided later by
+  // payout_monitor against the daemon's active chain.
   db.prepare(
-    `INSERT OR REPLACE INTO pool_blocks (height, hash, finder_worker, reward_tfx, status, found_at)
-     VALUES (?,?,?,?, 'pending', ?)`
+    `INSERT INTO pool_blocks (height, hash, finder_worker, reward_tfx, status, found_at)
+     VALUES (?,?,?,?, 'pending', ?)
+     ON CONFLICT(height) DO NOTHING`
   ).run(height, hash, key, total, iso);
   db.prepare('UPDATE pool_round SET round_shares = 0, started_at = ? WHERE id=1').run(iso);
 
@@ -124,11 +155,14 @@ function recordBlock(height, hash, login, blockRewardSat) {
   const worker = info.worker || (key.split('.')[1] || '');
   if (account_id) {
     const credit = total * (1 - DEV_FEE);   // single-account PPLNS -> all 98% here
+    // Idempotent credit: a second recordBlock for the same height+account+worker
+    // (the fork17 double-report) is a no-op, so a sibling cannot mint a second payout.
     db.prepare(
-      `INSERT INTO pool_payouts (account_id, worker_name, amount_tfx, block_height, status, created_at)
-       VALUES (?,?,?,?, 'pending', ?)`
-    ).run(account_id, worker, credit, height, iso);
+      `INSERT INTO pool_payouts (account_id, worker_name, amount_tfx, block_height, status, created_at, pool_ref)
+       VALUES (?,?,?,?, 'pending', ?, ?)
+       ON CONFLICT(pool_ref) DO NOTHING`
+    ).run(account_id, worker, credit, height, iso, payoutRef(height, account_id, worker));
   }
 }
 
-module.exports = { workerAuth, recordShare, recordStale, recordBlock, authCache, db, DEV_FEE };
+module.exports = { workerAuth, recordShare, recordStale, recordBlock, payoutRef, authCache, db, DEV_FEE };
