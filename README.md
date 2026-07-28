@@ -9,6 +9,20 @@ process blocks together, and share rewards.
 
 ---
 
+## Prerequisites
+
+- **Linux host** (the pool runs headless; Server 2 in production).
+- **Node.js 18+ (LTS)** and **npm** — builds the engine and the `better-sqlite3` native
+  module via `npm ci`.
+- **Python 3** — runs `payout_monitor.py` (block-maturity + on-chain payout loop).
+- A **synced Tracercoin full node** (`tracercoind`) on the **consensus build**, reachable over
+  **localhost RPC (port 9556)**. Its build/run and peer prerequisites — including adding the
+  launch node `addnode=159.65.188.80:9555` so the node actually syncs the live chain — are in
+  `github.com/Tracerfx123/blockchain` (README + `doc/build-prerequisites.md`).
+- The daemon `rpcpassword` from that node's `tracercoin.conf` (injected by `gen-config.js` at
+  runtime — never committed). No Redis or external DB required; state lives in the co-located
+  SQLite the pool writes to.
+
 ## What it does
 
 - Pools Scrypt hash power to mine **TFX** blocks and distribute rewards to contributors.
