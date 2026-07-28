@@ -65,7 +65,10 @@ on-chain testnet payouts).
 | `engine/` | node-stratum-pool engine (NOMP-style; `lib/*.js` is the stratum/daemon core) |
 | `init.js` | Pool entrypoint — wires the engine to portal-integrated auth + the stats writer |
 | `portal_bridge.js` | Authorizes each rig against the miner portal's `/api/portal/worker-auth`; writes `pool_worker_stats` / `pool_blocks` / `pool_payouts` / `pool_round` into the co-located portal SQLite |
-| `payout_monitor.py` | Maturity + payout loop — confirms mature blocks, sends credited amounts on-chain, records txids, flips payouts to `paid` |
+| `payout_monitor.py` | **Staging** maturity + payout loop — confirms mature blocks, sends credited amounts on-chain, records txids, flips payouts to `paid` |
+| `payout_monitor_mainnet.py` | **Mainnet** payout monitor (moves real funds) — same maturity/payout loop plus money-safety: `--dry-run`, per-block 98% conservation cap, `pool_ref` idempotency, `tfx1…` bech32 gate, encrypted-wallet unlock/lock around sends, and a 2% dev-fee `--sweep` to treasury. Config via `pool.env`. |
+| `pool.env.example` | Env template for the mainnet monitor (mainnet CLI, DB path, thresholds, treasury, wallet passphrase). Copy to `/opt/tfxpool/pool.env` (600, git-ignored); load via systemd `EnvironmentFile=`. |
+| `tests/dryrun_fixture_test.py` | Offline verification of the mainnet monitor's `--dry-run` logic against a throwaway SQLite fixture (no daemon, no sends). |
 | `gen-config.js` | Generates `pool_config.json` by injecting the daemon `rpcpassword` read from `tracercoin.conf` (never prints it) |
 | `pool_config.example.json` | Redacted config template — copy to `pool_config.json` and fill in real address / rpc creds (the real file is git-ignored) |
 | `run_testminers.sh` | Staging helper — launches cpuminer rigs authed via the portal (passwords read from a creds file, never hardcoded) |
@@ -82,6 +85,31 @@ python3 payout_monitor.py    # start the maturity/payout loop (add --once for a 
 
 `pool_config.json` is **never committed** — it carries the live daemon `rpcpassword`.
 Start from `pool_config.example.json`.
+
+### Mainnet payouts (`payout_monitor_mainnet.py`)
+
+This process **moves real funds**. Bring it up carefully:
+
+```bash
+cp pool.env.example /opt/tfxpool/pool.env      # then edit: TFX_CLI, POOL_DB, MINIMUM_PAYOUT,
+chmod 600 /opt/tfxpool/pool.env                #   TREASURY_ADDRESS, POOL_WALLET_PASSPHRASE
+set -a; . /opt/tfxpool/pool.env; set +a
+
+python3 tests/dryrun_fixture_test.py           # offline self-check (no daemon, no sends)
+python3 payout_monitor_mainnet.py --dry-run --once   # preview REAL payouts, nothing sent
+python3 payout_monitor_mainnet.py --once             # one real payout pass
+python3 payout_monitor_mainnet.py --sweep --dry-run  # preview the 2% dev-fee sweep
+python3 payout_monitor_mainnet.py                    # loop (payouts + periodic sweep)
+```
+
+Guarantees: a `pending` payout that already carries a `txid` is never re-sent
+(idempotent by `pool_ref` = `<height>:<account_id>:<worker>`); per block the total paid
+can never exceed **98%** of the block reward (the 2% dev fee is reserved and swept to
+treasury); only accounts with a valid mainnet `tfx1…` address are paid; the encrypted
+wallet is unlocked only for the send window and re-locked afterward; the passphrase is
+read from `pool.env` and never logged. In production the systemd unit loads `pool.env`
+via `EnvironmentFile=`; run `--dry-run` on pool-1 first and confirm the amounts before
+enabling the live service.
 
 ### Staging → production cutover diff
 
